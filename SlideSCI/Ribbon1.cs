@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -1537,7 +1537,15 @@ namespace SlideSCI
                                 }
                                 else if (segment.IsMathBlock)
                                 {
-                                    shape = InsertMathBlock(segment.Content, left, currentTop);
+                                    // 根据是否为复杂环境选择渲染方式
+                                    if (segment.UsesSvgRendering)
+                                    {
+                                        shape = InsertMathBlockAsSvg(segment.Content, left, currentTop);
+                                    }
+                                    else
+                                    {
+                                        shape = InsertMathBlock(segment.Content, left, currentTop);
+                                    }
                                 }
                                 else if (segment.IsBlockQuote)
                                 {
@@ -1864,6 +1872,7 @@ namespace SlideSCI
             public bool IsMathBlock { get; set; }
             public bool IsBlockQuote { get; set; } // Add this line
             public string Language { get; set; }
+            public bool UsesSvgRendering { get; set; } // 用于复杂LaTeX环境的SVG渲染标志
         }
 
         private List<MarkdownSegment> SplitMarkdownIntoSegments(string markdown)
@@ -1960,16 +1969,31 @@ namespace SlideSCI
                 }
                 else if (content.StartsWith("$$"))
                 {
-                    content = string.Join(
+                    // 先规范化内容（保留换行符）
+                    string normalizedContent = string.Join(
                         "\n",
                         content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
                     );
                     
-                    // Remove surrounding $$ markers like in insertEquationButton_Click
-                    string mathContent = content.Replace("\n", ""); // Remove line breaks
-                    if (mathContent.StartsWith("$$") && mathContent.EndsWith("$$"))
+                    // 剥离 $$ 包装
+                    string mathContent = normalizedContent;
+                    if (mathContent.StartsWith("$$"))
                     {
-                        mathContent = mathContent.Substring(2, mathContent.Length - 4);
+                        mathContent = mathContent.Substring(2);
+                    }
+                    if (mathContent.EndsWith("$$"))
+                    {
+                        mathContent = mathContent.Substring(0, mathContent.Length - 2);
+                    }
+                    mathContent = mathContent.Trim();
+                    
+                    // 检测是否为复杂LaTeX环境
+                    bool isComplexEnv = IsComplexLatexEnvironment(mathContent);
+                    
+                    // 对于简单公式，移除换行符（保持原有行为）；对于复杂环境，保留换行符
+                    if (!isComplexEnv)
+                    {
+                        mathContent = mathContent.Replace("\n", "");
                     }
                     
                     segments.Add(
@@ -1980,6 +2004,7 @@ namespace SlideSCI
                             IsTable = false,
                             IsMathBlock = true,
                             IsBlockQuote = false,
+                            UsesSvgRendering = isComplexEnv,
                         }
                     );
                 }
@@ -2067,6 +2092,84 @@ namespace SlideSCI
             }
 
             return textBox;
+        }
+
+        /// <summary>
+        /// 检查LaTeX公式是否包含PPT方程编辑器不支持的复杂环境
+        /// </summary>
+        private bool IsComplexLatexEnvironment(string latex)
+        {
+            // 检查是否包含 PPT 方程编辑器不支持的复杂 LaTeX 环境
+            return Regex.IsMatch(latex,
+                @"\\begin\s*\{(cases|align|aligned|gather|gathered|multline|split|matrix|pmatrix|bmatrix|vmatrix|Vmatrix|Bmatrix|array)\}");
+        }
+
+        /// <summary>
+        /// 通过SVG路径插入复杂LaTeX公式（用于PPT方程编辑器不支持的环境）
+        /// </summary>
+        private Shape InsertMathBlockAsSvg(string latexContent, float left, float top)
+        {
+            Slide slide = app.ActiveWindow.View.Slide;
+
+            try
+            {
+                var converter = Globals.ThisAddIn.LatexSvgConverter ?? new LatexToSvgConverter();
+                string svgContent = converter.ConvertLatexToSvg(latexContent);
+
+                if (string.IsNullOrWhiteSpace(svgContent))
+                {
+                    // SVG转换失败，回退到普通方程编辑器
+                    return InsertMathBlock(latexContent.Replace("\n", ""), left, top);
+                }
+
+                string tempDirectory = Path.Combine(Path.GetTempPath(), "SlideSCI", "latex");
+                Directory.CreateDirectory(tempDirectory);
+                string tempFilePath = Path.Combine(tempDirectory, $"latex_{Guid.NewGuid():N}.svg");
+                File.WriteAllText(tempFilePath, svgContent, Encoding.UTF8);
+
+                try
+                {
+                    Shape svgShape = slide.Shapes.AddPicture(
+                        tempFilePath,
+                        Office.MsoTriState.msoFalse,
+                        Office.MsoTriState.msoTrue,
+                        left,
+                        top,
+                        -1,
+                        -1
+                    );
+
+                    if (svgShape != null)
+                    {
+                        svgShape.LockAspectRatio = Office.MsoTriState.msoTrue;
+                        svgShape.AlternativeText = latexContent;
+                        // 默认设置为2x大小以保持清晰度
+                        svgShape.Width *= 2;
+                    }
+
+                    return svgShape;
+                }
+                finally
+                {
+                    try
+                    {
+                        if (File.Exists(tempFilePath))
+                        {
+                            File.Delete(tempFilePath);
+                        }
+                    }
+                    catch (Exception deleteEx)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"删除临时 SVG 文件失败: {deleteEx.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"SVG转换失败，回退到方程编辑器: {ex.Message}");
+                // SVG转换失败，回退到普通方程编辑器（移除换行符）
+                return InsertMathBlock(latexContent.Replace("\n", ""), left, top);
+            }
         }
 
         private Shape InsertMathBlock(string mathContent, float left, float top)

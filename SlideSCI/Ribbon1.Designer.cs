@@ -593,7 +593,7 @@
             // 
             // toggleBackgroundCheckBox
             // 
-            this.toggleBackgroundCheckBox.Checked = true;
+            this.toggleBackgroundCheckBox.Checked = false;
             this.toggleBackgroundCheckBox.Label = "黑色背景";
             this.toggleBackgroundCheckBox.Name = "toggleBackgroundCheckBox";
             this.toggleBackgroundCheckBox.ScreenTip = "代码设置为黑色背景";
